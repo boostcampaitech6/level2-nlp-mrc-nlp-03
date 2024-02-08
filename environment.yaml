@@ -12,8 +12,9 @@ dependencies:
   - python=3.9
   - cudatoolkit=11.4.1
   - faiss-gpu=1.7.4
-  - pytorch=1.12.1
+  - pytorch=1.13
   - transformers=4.36
+  - accelerate
   - nodejs=20.*
 
   # --------- logger --------- #
