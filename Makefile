@@ -33,3 +33,9 @@ set-style-dep: # Install Linting packages
 set-precommit: # Set up pre-commit
 	pip3 install pre-commit==3.6
 	pre-commit install
+
+train: # Train model based on the script
+	sh script/train.sh
+
+predict: # Inference based on the script
+	sh script/inference.sh
