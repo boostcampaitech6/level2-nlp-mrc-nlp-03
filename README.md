@@ -1,5 +1,11 @@
 ## Installation
 
+```bash
+cd # HOME으로 이동
+git clone git@github.com:boostcampaitech6/level2-nlp-mrc-nlp-03
+cd level2-nlp-mrc-nlp-03
+```
+
 #### Dependencies 설치
 
 ```bash
@@ -16,6 +22,31 @@ mamba activate mrc
 
 ```bash
 make setup # commit message 설정 및 pre-commit 관련 패키지를 설치
+```
+
+## How To Run
+
+#### 실행위치
+
+```bash
+$ pwd
+/data/ephemeral/home/level2-nlp-mrc-nlp-03
+```
+
+#### Train
+
+[script/train.sh](script/train.sh)에서 설정을 간편하게 변경할 수 있습니다.
+
+```bash
+make train # sh script/train.sh
+```
+
+#### Inference
+
+[script/train.sh](script/inference.sh)에서 설정을 간편하게 변경할 수 있습니다.
+
+```bash
+make predict # sh script/inference.sh
 ```
 
 ## How To Pre-commit
