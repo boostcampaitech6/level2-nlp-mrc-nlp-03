@@ -39,3 +39,7 @@ train: # Train model based on the script
 
 predict: # Inference based on the script
 	sh script/inference.sh
+
+run: # Pipeline from training to inference
+	sh script/train.sh
+	sh script/inference.sh

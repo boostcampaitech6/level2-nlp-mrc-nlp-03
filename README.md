@@ -49,6 +49,14 @@ make train # sh script/train.sh
 make predict # sh script/inference.sh
 ```
 
+#### Pipeline
+
+train -> evaluation -> inference
+
+```bash
+make run # sh script/train.sh && sh script/inference.sh
+```
+
 ## How To Pre-commit
 
 ```bash
