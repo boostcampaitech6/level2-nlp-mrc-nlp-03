@@ -1,16 +1,30 @@
 # pip install --upgrade pip
 # pip install 'farm-haystack[all]'
 import json
+import random
 from collections import OrderedDict
 
+import numpy as np
 import pandas as pd
+import torch
 from datasets import load_from_disk
 from haystack.document_stores import InMemoryDocumentStore
 from haystack.nodes import BM25Retriever, FARMReader
 from haystack.pipelines import ExtractiveQAPipeline
+from transformers import set_seed
+
+
+def set_seed_all(seed: int = 2024):
+    set_seed(seed)  # transformer seed 고정
+    random.seed(seed)  # python random seed 고정
+    np.random.seed(seed)  # numpy random seed 고정
+    torch.manual_seed(seed)  # torch random seed 고정
+    torch.cuda.manual_seed_all(seed)
 
 
 def main():
+    set_seed_all(2024)
+
     # 위키피디아 문서 불러오기
     wiki = pd.read_json("../data/wikipedia_documents.json", orient="values")
 
@@ -39,7 +53,7 @@ def main():
         progress_bar=True,
         max_seq_len=max_seq_length,
         doc_stride=doc_stride,
-        return_no_answer=True,
+        return_no_answer=False,
         use_gpu=True,
     )
 
