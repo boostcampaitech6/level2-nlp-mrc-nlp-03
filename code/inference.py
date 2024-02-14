@@ -198,7 +198,7 @@ def run_mrc(
             ]
         return tokenized_examples
 
-    eval_dataset = datasets["validation"]
+    eval_dataset = datasets["validation"] ## deprecated
 
     # Validation Feature 생성
     eval_dataset = eval_dataset.map(

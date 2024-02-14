@@ -157,3 +157,6 @@ models
 
 # For MacOS
 .DS_Store
+
+# data dir
+data/*

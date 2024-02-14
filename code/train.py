@@ -124,13 +124,13 @@ def run_mrc(
 
     # Padding에 대한 옵션을 설정합니다.
     # (question|context) 혹은 (context|question)로 세팅 가능합니다.
-    pad_on_right = tokenizer.padding_side == "right"
+    pad_on_right = tokenizer.padding_side == "right" ## 오른쪽인지 확인
 
     # 오류가 있는지 확인합니다.
     last_checkpoint, max_seq_length = check_no_error(data_args, training_args, datasets, tokenizer)
 
     # Train preprocessing / 전처리를 진행합니다.
-    def prepare_train_features(examples):
+    def prepare_train_features(examples): ## dataset의 row가 들어옴
         # truncation과 padding(length가 짧을때만)을 통해 toknization을 진행하며, stride를 이용하여 overflow를 유지합니다.
         # 각 example들은 이전의 context와 조금씩 겹치게됩니다.
         tokenized_examples = tokenizer(
@@ -147,7 +147,7 @@ def run_mrc(
 
         # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
         sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
-        # token의 캐릭터 단위 position를 찾을 수 있도록 offset mapping을 사용합니다.
+        # token의 캐릭터 단위 position를 찾을 수 있도록 offset mapping을 사용합니다. 
         # start_positions과 end_positions을 찾는데 도움을 줄 수 있습니다.
         offset_mapping = tokenized_examples.pop("offset_mapping")
 
@@ -193,7 +193,7 @@ def run_mrc(
                     tokenized_examples["start_positions"].append(cls_index)
                     tokenized_examples["end_positions"].append(cls_index)
                 else:
-                    # token_start_index 및 token_end_index를 answer의 끝으로 이동합니다.
+                    # token_start_index 및 token_end_index를 answer의 시작과 끝으로 이동합니다.
                     # Note: answer가 마지막 단어인 경우 last offset을 따라갈 수 있습니다(edge case).
                     while (
                         token_start_index < len(offsets)
