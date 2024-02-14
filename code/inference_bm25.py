@@ -12,7 +12,7 @@ import sys
 import numpy as np
 from arguments import DataTrainingArguments, ModelArguments
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk, load_metric
-from retriever.tfidf import SparseRetrieval
+from retriever.bm25 import BM25Retrieval
 from trainer_qa import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,
@@ -74,7 +74,7 @@ def main():
 
     # True일 경우 : run passage retrieval
     if data_args.eval_retrieval:
-        datasets = run_sparse_retrieval(
+        datasets = run_bm25_retrieval(
             tokenizer.tokenize,
             datasets,
             training_args,
@@ -86,7 +86,7 @@ def main():
         run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
 
-def run_sparse_retrieval(
+def run_bm25_retrieval(
     tokenize_fn: Callable[[str], List[str]],
     datasets: DatasetDict,
     training_args: TrainingArguments,
@@ -95,16 +95,11 @@ def run_sparse_retrieval(
     context_path: str = "wikipedia_documents.json",
 ) -> DatasetDict:
     # Query에 맞는 Passage들을 Retrieval 합니다.
-    retriever = SparseRetrieval(
+    retriever = BM25Retrieval(
         tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
     )
-    retriever.get_sparse_embedding()
 
-    if data_args.use_faiss:
-        retriever.build_faiss(num_clusters=data_args.num_clusters)
-        df = retriever.retrieve_faiss(datasets["validation"], topk=data_args.top_k_retrieval)
-    else:
-        df = retriever.retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
+    df = retriever.retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
 
     # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
     if training_args.do_predict:
