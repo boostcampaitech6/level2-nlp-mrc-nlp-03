@@ -12,7 +12,10 @@ import sys
 import numpy as np
 from arguments import DataTrainingArguments, ModelArguments
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk, load_metric
-from retrieval import SparseRetrieval
+
+from retrieve.tf_idf import TfidfRetrieval
+from retrieve.bm25 import BM25
+
 from trainer_qa import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,
@@ -95,9 +98,14 @@ def run_sparse_retrieval(
     context_path: str = "wikipedia_documents.json",
 ) -> DatasetDict:
     # Query에 맞는 Passage들을 Retrieval 합니다.
-    retriever = SparseRetrieval(
-        tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
-    )
+
+    if data_args.bm25:
+        print(">>>>> BM25를 사용합니다.")
+        retriever = BM25(tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path) # BM25를 사용하는 경우 
+    else:
+        print(">>>>> TF-IDF를 사용합니다.")
+        retriever = TfidfRetrieval(tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path) # TF-IDF 사용하는 경우
+
     retriever.get_sparse_embedding()
 
     if data_args.use_faiss:
