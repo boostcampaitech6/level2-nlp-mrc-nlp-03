@@ -160,3 +160,4 @@ models
 
 # data dir
 data/*
+!data_preprocessing.ipynb
