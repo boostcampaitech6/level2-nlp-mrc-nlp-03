@@ -5,10 +5,11 @@ import os
 import random
 import sys
 
+import evaluate
 import numpy as np
 import torch
 from arguments import DataTrainingArguments, ModelArguments
-from datasets import DatasetDict, load_from_disk, load_metric
+from datasets import DatasetDict, load_from_disk
 from trainer_qa import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,
@@ -32,7 +33,6 @@ torch.cuda.manual_seed_all(seed)
 if deterministic:  # cudnn random seed 고정 - 고정 시 학습 속도가 느려질 수 있습니다.
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
 logger = logging.getLogger(__name__)
 
@@ -124,13 +124,13 @@ def run_mrc(
 
     # Padding에 대한 옵션을 설정합니다.
     # (question|context) 혹은 (context|question)로 세팅 가능합니다.
-    pad_on_right = tokenizer.padding_side == "right" ## 오른쪽인지 확인
+    pad_on_right = tokenizer.padding_side == "right"  # 오른쪽인지 확인
 
     # 오류가 있는지 확인합니다.
     last_checkpoint, max_seq_length = check_no_error(data_args, training_args, datasets, tokenizer)
 
     # Train preprocessing / 전처리를 진행합니다.
-    def prepare_train_features(examples): ## dataset의 row가 들어옴
+    def prepare_train_features(examples):  # dataset의 row가 들어옴
         # truncation과 padding(length가 짧을때만)을 통해 toknization을 진행하며, stride를 이용하여 overflow를 유지합니다.
         # 각 example들은 이전의 context와 조금씩 겹치게됩니다.
         tokenized_examples = tokenizer(
@@ -147,7 +147,7 @@ def run_mrc(
 
         # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
         sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
-        # token의 캐릭터 단위 position를 찾을 수 있도록 offset mapping을 사용합니다. 
+        # token의 캐릭터 단위 position를 찾을 수 있도록 offset mapping을 사용합니다.
         # start_positions과 end_positions을 찾는데 도움을 줄 수 있습니다.
         offset_mapping = tokenized_examples.pop("offset_mapping")
 
@@ -301,7 +301,7 @@ def run_mrc(
             ]
             return EvalPrediction(predictions=formatted_predictions, label_ids=references)
 
-    metric = load_metric("squad")
+    metric = evaluate.load("squad", trust_remote_code=True)
 
     def compute_metrics(p: EvalPrediction):
         return metric.compute(predictions=p.predictions, references=p.label_ids)

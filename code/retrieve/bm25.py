@@ -11,17 +11,19 @@ import faiss
 import numpy as np
 import pandas as pd
 from datasets import Dataset, concatenate_datasets, load_from_disk
+from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 
 from .base_retrieval_class import Retrieval
-from rank_bm25 import BM25Okapi
+
 
 @contextmanager
 def timer(name):
     t0 = time.time()
     yield
     print(f"[{name}] done in {time.time() - t0:.3f} s")
+
 
 class BM25(Retrieval):
     def __init__(
@@ -50,14 +52,14 @@ class BM25(Retrieval):
         Summary:
             Passage 파일을 불러오고 TfidfVectorizer를 선언하는 기능을 합니다.
         """
-        super(BM25, self).__init__(tokenize_fn, data_path, context_path)
+        super().__init__(tokenize_fn, data_path, context_path)
         self.tokenize_fn = tokenize_fn
         self.bm25 = None
 
     def get_sparse_embedding(self):
         with timer("BM25 Embedding"):
-            self.bm25 = BM25Okapi(self.contexts, tokenizer=self.tokenize_fn) 
-        
+            self.bm25 = BM25Okapi(self.contexts, tokenizer=self.tokenize_fn)
+
     def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
         with timer("query 토큰화"):
             tokenized_query = self.tokenize_fn(query)
@@ -68,17 +70,20 @@ class BM25(Retrieval):
         sorted_result = np.argsort(result)[::-1]
         doc_score = result[sorted_result].tolist()[:k]
         doc_indices = sorted_result.tolist()[:k]
-        
+
         return doc_score, doc_indices
 
-    def get_relevant_doc_bulk(
-        self, queries: List, k: Optional[int] = 1
-    ) -> Tuple[List, List]:
+    def get_relevant_doc_bulk(self, queries: List, k: Optional[int] = 1) -> Tuple[List, List]:
         with timer("query 토큰화"):
             tokenized_queris = [self.tokenize_fn(query) for query in queries]
 
         with timer("문서 search"):
-            result = np.array([self.bm25.get_scores(tokenized_query) for tokenized_query in tqdm(tokenized_queris)])
+            result = np.array(
+                [
+                    self.bm25.get_scores(tokenized_query)
+                    for tokenized_query in tqdm(tokenized_queris, desc="관련 문서 수집: ")
+                ]
+            )
 
         doc_scores = []
         doc_indices = []
