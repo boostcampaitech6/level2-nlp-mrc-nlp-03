@@ -137,10 +137,12 @@ def run_sparse_retrieval(
                     id=None,
                 ),
                 "context": Value(dtype="string", id=None),
+                "original_context": Value(dtype="string", id=None), ## --do_eval 에서 에러 해결
                 "id": Value(dtype="string", id=None),
                 "question": Value(dtype="string", id=None),
             }
         )
+    # print(df.columns)
     datasets = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
     return datasets
 
