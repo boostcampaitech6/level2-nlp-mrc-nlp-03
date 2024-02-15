@@ -9,9 +9,10 @@ from typing import Callable, Dict, List, NoReturn, Tuple
 import logging
 import sys
 
+import evaluate
 import numpy as np
 from arguments import DataTrainingArguments, ModelArguments
-from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk, load_metric
+from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk
 from retrieve.bm25 import BM25
 from retrieve.tf_idf import TfidfRetrieval
 from trainer_qa import QuestionAnsweringTrainer
@@ -92,20 +93,22 @@ def run_sparse_retrieval(
     datasets: DatasetDict,
     training_args: TrainingArguments,
     data_args: DataTrainingArguments,
-    data_path: str = "../data",
-    context_path: str = "wikipedia_documents.json",
 ) -> DatasetDict:
     # Query에 맞는 Passage들을 Retrieval 합니다.
-
+    logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
     if data_args.bm25:
         print(">>>>> BM25를 사용합니다.")
         retriever = BM25(
-            tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
+            tokenize_fn=tokenize_fn,
+            data_path=data_args.data_path,
+            context_path=data_args.context_path,
         )  # BM25를 사용하는 경우
     else:
         print(">>>>> TF-IDF를 사용합니다.")
         retriever = TfidfRetrieval(
-            tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
+            tokenize_fn=tokenize_fn,
+            data_path=data_args.data_path,
+            context_path=data_args.context_path,
         )  # TF-IDF 사용하는 경우
 
     retriever.get_sparse_embedding()
@@ -256,7 +259,7 @@ def run_mrc(
 
             return EvalPrediction(predictions=formatted_predictions, label_ids=references)
 
-    metric = load_metric("squad")
+    metric = evaluate.load("squad", trust_remote_code=True)
 
     def compute_metrics(p: EvalPrediction) -> Dict:
         return metric.compute(predictions=p.predictions, references=p.label_ids)
