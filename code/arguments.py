@@ -31,6 +31,17 @@ class DataTrainingArguments:
         default="../data/train_dataset",
         metadata={"help": "The name of the dataset to use."},
     )
+
+    data_path: Optional[str] = field(
+        default="../data",
+        metadata={"help": "The path of the 'data' directory."},
+    )
+
+    context_path: Optional[str] = field(
+        default="wikipedia_documents.json",
+        metadata={"help": "The name of the documents to retrieve."},
+    )
+
     overwrite_cache: bool = field(
         default=False,
         metadata={"help": "Overwrite the cached training and evaluation sets"},
@@ -78,11 +89,5 @@ class DataTrainingArguments:
         default=30,
         metadata={"help": "Define how many top-k passages to retrieve based on similarity."},
     )
-    use_faiss: bool = field(
-        default=False, 
-        metadata={"help": "Whether to build with faiss"}
-    )
-    bm25: bool = field(
-        default=True, 
-        metadata={"help": "Whether to use BM25"}
-    )
+    use_faiss: bool = field(default=False, metadata={"help": "Whether to build with faiss"})
+    bm25: bool = field(default=True, metadata={"help": "Whether to use BM25"})
