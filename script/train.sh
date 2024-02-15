@@ -9,8 +9,6 @@
 # --pad_to_max_length: Whether to pad all samples to `max_seq_length`.
 # --doc_stride: When splitting up a long document into chunks, how much stride to take between chunks.
 # --max_answer_length: The maximum length of an answer that can be generated.
-# --eval_retrieval: Whether to run passage retrieval using sparse embedding.
-# --num_clusters: Define how many clusters to use for faiss.
 
 # Training Arguments 설명
 # --output_dir: The output directory where the model predictions and checkpoints will be written.
