@@ -146,7 +146,6 @@ dmypy.json
 *.csv
 *.pt
 *.ckpt
-*.ipynb
 *.json
 *.arrow
 mlruns
