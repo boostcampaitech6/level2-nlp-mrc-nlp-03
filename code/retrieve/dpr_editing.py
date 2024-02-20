@@ -6,6 +6,7 @@ from tqdm.auto import tqdm
 from pprint import pprint
 
 from sklearn.feature_extraction.text import TfidfVectorizer
+from datasets import Dataset, concatenate_datasets, load_from_disk
 
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -45,6 +46,32 @@ def timer(name):
     yield
     print(f"[{name}] done in {time.time() - t0:.3f} s")
 
+
+class BertEncoder(BertPreTrainedModel):
+
+    def __init__(self, config):
+        super(BertEncoder, self).__init__(config)
+
+        self.bert = BertModel(config)
+        self.init_weights()
+
+
+    def forward(
+            self,
+            input_ids,
+            attention_mask=None,
+            token_type_ids=None
+        ):
+
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
+
+        pooled_output = outputs[1]
+        return pooled_output
+
 class DenseRetrieval:
 
     # def __init__(self, args, dataset, num_neg, tokenizer, p_encoder, q_encoder):
@@ -62,6 +89,7 @@ class DenseRetrieval:
         self.p_encoder = None # get_dense_encoder()로 생성합니다.
         self.q_encoder = None # get_dense_encoder()로 생성합니다.
 
+        self.p_embs = None # 이후 faiss 작업용. get_relevant_doc 또는 get_relevant_doc_bulk로부터 받아옵니다. 
         self.indexer = None # build_faiss()로 생성합니다.
 
         self.prepare_in_batch_negative(num_neg=self.num_neg)
@@ -119,16 +147,19 @@ class DenseRetrieval:
 
     def get_dense_encoding(self, encoder_path : Optional[str] = None, model_checkpoint:Optional[str] = None) -> NoReturn:
         '''
-          Summary:
-              train된 모델(passage encoder과 query encoder)이 없으면 모델을 학습시키고
-              모델을 pickle로 저장합니다.
-              미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
+            Summary:
+                train된 모델(passage encoder과 query encoder)이 없으면 모델을 학습시키고
+                모델을 pickle로 저장합니다.
+                미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
 
-          Arguments:
-              encoder_path (Optional[str]):
-                  passage와 query의 encoder가 저장된(혹은 저장하고자 하는) 폴더의 경로를 받습니다.
-              model_checkpoint :
-                  미리 학습된 모델이 없을 경우, 학습에 사용하려는 모델을 받습니다.
+            Arguments:
+                encoder_path (Optional[str]):
+                    passage와 query의 encoder가 저장된(혹은 저장하고자 하는) 폴더의 경로를 받습니다.
+                model_checkpoint :
+                    미리 학습된 모델이 없을 경우, 학습에 사용하려는 모델을 받습니다.
+            Note:
+                기존 모델이 존재하는 경우, encoder_path만 입력하면 됩니다.
+                새로운 학습이 필요한 경우, encoder_path에 존재하는 encoder 삭제 후, model_checkpoint도 같이 기입해주시면 됩니다.
         '''
 
         p_ecd_name = f'trained_p_encoder.bin'
@@ -154,8 +185,8 @@ class DenseRetrieval:
             'encoder를 학습하기 위한 모델이 필요합니다.'
 
             print('Build encoder.')
-            self.p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(self.args.device)
-            self.q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(self.args.device)
+            self.p_encoder = BertEncoder.from_pretrained(model_checkpoint, cache_dir='../dpr_encoder/cache').to(self.args.device)
+            self.q_encoder = BertEncoder.from_pretrained(model_checkpoint, cache_dir='../dpr_encoder/cache').to(self.args.device)
 
             self.train()
 
@@ -244,7 +275,8 @@ class DenseRetrieval:
 
     def retrieve(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
-    ) -> Union[Tuple(List, List), pd.DataFrame]:
+    ) -> Union[Tuple[List, List], pd.DataFrame]:
+        print(isinstance(query_or_dataset, Dataset))
         '''
         Arguments:
             query_or_dataset (Union[str, Dataset]):
@@ -277,6 +309,7 @@ class DenseRetrieval:
 
             return (doc_prod_scores, [self.dataset['context'][pid] for pid in range(rank)])
         elif isinstance(query_or_dataset, Dataset):
+        # else:
 
             # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
             total = []
@@ -295,7 +328,7 @@ class DenseRetrieval:
 
                     # Retrieve한 Passage의 id, context를 반환합니다.
                     'context_id': ranks[idx],
-                    'context': ''.join([self.dataset['context'][pid] for pid in rank[idx]])
+                    'context': ''.join([self.dataset['context'][pid] for pid in ranks[idx]])
                 }
 
                 if 'context' in example.keys() and 'answers' in example.keys():
@@ -307,6 +340,8 @@ class DenseRetrieval:
 
             cqas = pd.DataFrame(total)
             return cqas
+        else:
+            assert False, "Data의 타입을 확인해주세요. str, Dataset(not dataframe)형태가 아니면 안나옴."
 
     def get_relevant_doc(
         self, query:str, k:Optional[int]=1, args=None, p_encoder=None, q_encoder=None
@@ -344,8 +379,10 @@ class DenseRetrieval:
         p_embs = torch.stack(p_embs, dim=0).view(len(self.passage_dataloader.dataset), -1)  # (num_passage, emb_dim)
 
         dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
-        rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
-        return dot_prod_scores[rank][:k].tolist(), rank[:k].tolist()
+        rank = torch.argsort(dot_prod_scores, dim=1, descending=True)
+        print(dot_prod_scores.shape, rank.shape)
+        # print(dot_prod_scores[0].shape)
+        return dot_prod_scores[0][rank][:k].tolist(), rank[0][:k].tolist()
 
 
     def get_relevant_doc_bulk(
@@ -360,16 +397,46 @@ class DenseRetrieval:
         if q_encoder is None:
             q_encoder = self.q_encoder
 
+        # 메모리 사용량 프로파일링 시작
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()  # 캐시된 메모리 정리
+
         with torch.no_grad():
             p_encoder.eval()
             q_encoder.eval()
 
-            q_seqs_val = self.tokenizer(queries, padding="max_length", truncation=True, return_tensors='pt').to(args.device)
-            q_emb = q_encoder(**q_seqs_val).to('cpu')  # (num_query=1, emb_dim)
+            q_seqs_val = self.tokenizer(queries, padding="max_length", truncation=True, return_tensors='pt')
+            q_dataset = TensorDataset(
+                q_seqs_val['input_ids'], q_seqs_val['attention_mask'], q_seqs_val['token_type_ids']
+            )
+            q_dataloader = DataLoader(q_dataset, batch_size = self.args.per_device_eval_batch_size)
 
-            # 이부분이 뭔가 indexer들어가는 부분같은디..
+            q_embs = []
+            
+            # for batch in q_dataloader:
+            for batch in tqdm(q_dataloader, desc='query encoding: '):
+        
+                batch = tuple(t.to(args.device) for t in batch)
+                q_inputs = {
+                    'input_ids': batch[0],
+                    'attention_mask': batch[1],
+                    'token_type_ids': batch[2]
+                }
+                q_emb = q_encoder(**q_inputs).to('cpu')
+                # q_emb = q_encoder(**p_inputs).to(args.device)
+                q_embs.append(q_emb)
+
+                # 메모리 사용량 확인
+                # print(f"Peak memory usage by tensors: {torch.cuda.max_memory_allocated() / 1e6} MB")
+
+            q_embs = torch.stack(q_embs, dim=0).view(len(self.passage_dataloader.dataset), -1)  # (num_passage, emb_dim)
+
+            # # q_emb = q_encoder(**q_seqs_val).to('cpu')  # (num_query=1, emb_dim)
+            # q_emb = q_encoder(**q_seqs_val).to(args.device)  # (num_query=1, emb_dim)
+
             p_embs = []
-            for batch in self.passage_dataloader:
+            # for batch in self.passage_dataloader:
+            for batch in tqdm(q_dataloader, desc='passage encoding: '):
 
                 batch = tuple(t.to(args.device) for t in batch)
                 p_inputs = {
@@ -378,43 +445,88 @@ class DenseRetrieval:
                     'token_type_ids': batch[2]
                 }
                 p_emb = p_encoder(**p_inputs).to('cpu')
+                # p_emb = p_encoder(**p_inputs).to(args.device)
                 p_embs.append(p_emb)
 
         p_embs = torch.stack(p_embs, dim=0).view(len(self.passage_dataloader.dataset), -1)  # (num_passage, emb_dim)
 
-        dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
-        rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
+        dot_prod_scores = torch.matmul(q_embs, torch.transpose(p_embs, 0, 1))
+        rank = torch.argsort(dot_prod_scores, dim=1, descending=True)
         d, r = [], []
-        for i in range(rank.shape[0]):
+        
+        # for i in range(rank.shape[0]):
+        for i in tqdm(range(rank.shape[0]), desc=': '):
             d.append(dot_prod_scores[i][rank][:k].tolist())
             r.append(rank[i][:k].tolist())
       
         return d, r
     
 
+def main():
+
+    # GPU OOM : https://modernflow.tistory.com/88
+    # PYTORCH_CUDA_ALLOC_CONF 환경 변수 설정
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    
+    torch.cuda.empty_cache()
+    
+    # 데이터셋과 모델은 아래와 같이 불러옵니다.
+    train_dataset = load_dataset("squad_kor_v1")["train"]
 
 
-class BertEncoder(BertPreTrainedModel):
 
-    def __init__(self, config):
-        super(BertEncoder, self).__init__(config)
+    org_dataset = load_from_disk('../data/train_dataset')
 
-        self.bert = BertModel(config)
-        self.init_weights()
+    full_ds = concatenate_datasets(
+        [
+            org_dataset["train"].flatten_indices(),
+            org_dataset["validation"].flatten_indices(),
+        ]
+    )  # train dev 를 합친 4192 개 질문에 대해 모두 테스트
+    print("*" * 40, "query dataset", "*" * 40)
+    print(full_ds)
+
+    # # 메모리가 부족한 경우 일부만 사용하세요 !
+    # num_sample = 1500
+    # sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
+    # train_dataset = train_dataset[sample_idx]
+
+    args = TrainingArguments(
+        output_dir="dense_retireval",
+        evaluation_strategy="epoch",
+        learning_rate=3e-4,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        num_train_epochs=2,
+        weight_decay=0.01
+    )
+    model_checkpoint = "klue/bert-base"
+
+    # # 혹시 위에서 사용한 encoder가 있다면 주석처리 후 진행해주세요 (CUDA ...)
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    # p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
+    # q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
+
+    # Retriever는 아래와 같이 사용할 수 있도록 코드를 짜봅시다.
+    retriever = DenseRetrieval(
+        args=args,
+        dataset=full_ds,
+        num_neg=2,
+        tokenizer=tokenizer
+    )
+
+    
+    retriever.get_dense_encoding(encoder_path='./dpr_encoder', model_checkpoint=model_checkpoint)
 
 
-    def forward(
-            self,
-            input_ids,
-            attention_mask=None,
-            token_type_ids=None
-        ):
+    
+    df = retriever.retrieve(query_or_dataset=full_ds, topk=5)
+    print(df.head())
 
-        outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids
-        )
 
-        pooled_output = outputs[1]
-        return pooled_output
+
+    
+if __name__ == '__main__':
+    main()
+
+
