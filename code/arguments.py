@@ -94,4 +94,10 @@ class DataTrainingArguments:
         metadata={"help": "Define how many top-k passages to retrieve based on similarity."},
     )
     use_faiss: bool = field(default=False, metadata={"help": "Whether to build with faiss"})
-    bm25: bool = field(default=True, metadata={"help": "Whether to use BM25"})
+    # bm25: bool = field(default=False, metadata={"help": "Whether to use BM25"})
+    # dpr: bool = field(default=False, metadata={"help": "Whether to use DPR"})
+    # tf_idf: bool = field(default=False, metadata={"help": "Whether to use TF-IDF"})
+    retrieval_type: Optional[str] = field(
+        default="dpr",
+        metadata={"help": "The type of retrieval to use."},
+    )
