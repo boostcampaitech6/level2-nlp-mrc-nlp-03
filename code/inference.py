@@ -14,8 +14,10 @@ import numpy as np
 from arguments import DataTrainingArguments, ModelArguments
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk
 from retrieve.bm25 import BM25
+# from retrieve.new_bm25 import BM25Retrieval as BM25
 from retrieve.tf_idf import TfidfRetrieval
 from trainer_qa import QuestionAnsweringTrainer
+from retrieve.dpr import DenseRetrieval
 from transformers import (
     AutoConfig,
     AutoModelForQuestionAnswering,
@@ -100,20 +102,27 @@ def run_sparse_retrieval(
 ) -> DatasetDict:
     # Query에 맞는 Passage들을 Retrieval 합니다.
     logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
-    if data_args.bm25:
+    if data_args.retrieval_type == "bm25":
         print(">>>>> BM25를 사용합니다.")
         retriever = BM25(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )  # BM25를 사용하는 경우
-    else:
+    elif data_args.retrieval_type == "tfidf":
         print(">>>>> TF-IDF를 사용합니다.")
         retriever = TfidfRetrieval(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )  # TF-IDF 사용하는 경우
+    elif data_args.retrieval_type == "dpr":
+        print(">>>>> DPR를 사용합니다.")
+        retriever = DenseRetrieval(
+            tokenize_fn=tokenize_fn,
+            data_path=data_args.data_path,
+            context_path=data_args.context_path,
+        ) # DPR 사용하는 경우
 
     retriever.get_sparse_embedding()
 
@@ -190,7 +199,7 @@ def run_mrc(
             stride=data_args.doc_stride,
             return_overflowing_tokens=True,
             return_offsets_mapping=True,
-            return_token_type_ids=False,  # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
+            return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
             padding="max_length" if data_args.pad_to_max_length else False,
         )
 
