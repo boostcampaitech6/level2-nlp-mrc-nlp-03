@@ -58,7 +58,19 @@ class BM25(Retrieval):
 
     def get_sparse_embedding(self):
         with timer("BM25 Embedding"):
-            self.bm25 = BM25Okapi(self.contexts, tokenizer=self.tokenize_fn)
+            # Pickle을 저장합니다.
+            bm25v_pickle = "bm25v.bin"
+            bm25v_path = os.path.join(self.data_path, bm25v_pickle)
+
+            if os.path.isfile(bm25v_path):
+                with open(bm25v_path, "rb") as file:
+                    self.bm25 = pickle.load(file)
+                print("BM25 pickle load.")
+            else:
+                self.bm25 = BM25Okapi(self.contexts, tokenizer=self.tokenize_fn)
+                with open(bm25v_path, "wb") as file:
+                    pickle.dump(self.bm25, file)
+                print("BM25 pickle saved.")
 
     def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
         with timer("query 토큰화"):
@@ -78,19 +90,39 @@ class BM25(Retrieval):
             tokenized_queris = [self.tokenize_fn(query) for query in queries]
 
         with timer("문서 search"):
-            result = np.array(
-                [
-                    self.bm25.get_scores(tokenized_query)
-                    for tokenized_query in tqdm(tokenized_queris, desc="관련 문서 수집: ")
-                ]
-            )
+            
+            # Pickle을 저장합니다.
+            bm25_ranking = "bm25_ranking.bin"
+            bm25_scores = "bm25_scores.bin"
+            bm25_ranking_path = os.path.join(self.data_path, bm25_ranking)
+            bm25_scores_path = os.path.join(self.data_path, bm25_scores)
 
-        doc_scores = []
-        doc_indices = []
+            if os.path.isfile(bm25_ranking_path) and os.path.isfile(bm25_scores_path):
+                with open(bm25_ranking_path, "rb") as file:
+                    doc_indices = pickle.load(file)
+                with open(bm25_scores_path, "rb") as file:
+                    doc_scores = pickle.load(file)
+            else:
+                result = np.array(
+                    [
+                        self.bm25.get_scores(tokenized_query)
+                        for tokenized_query in tqdm(tokenized_queris, desc="관련 문서 수집: ")
+                    ]
+                )
 
-        for i in range(result.shape[0]):
-            sorted_result = np.argsort(result[i, :])[::-1]
-            doc_scores.append(result[i, :][sorted_result].tolist()[:k])
-            doc_indices.append(sorted_result.tolist()[:k])
+                doc_scores = []
+                doc_indices = []
 
+                for i in range(result.shape[0]):
+                    sorted_result = np.argsort(result[i, :])[::-1]
+                    doc_scores.append(result[i, :][sorted_result].tolist())
+                    doc_indices.append(sorted_result.tolist())
+
+                with open(bm25_ranking_path, "wb") as file:
+                    pickle.dump(doc_indices, file)
+                with open(bm25_scores_path, "wb") as file:
+                    pickle.dump(doc_scores, file)
+        
+        doc_scores = [doc_score[:k] for doc_score in doc_scores]
+        doc_indices = [doc_index[:k] for doc_index in doc_indices]
         return doc_scores, doc_indices

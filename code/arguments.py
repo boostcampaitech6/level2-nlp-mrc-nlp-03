@@ -8,7 +8,7 @@ class ModelArguments:
     """Arguments pertaining to which model/config/tokenizer we are going to fine-tune from."""
 
     model_name_or_path: str = field(
-        default="klue/bert-base",
+        default="klue/roberta-large",
         metadata={
             "help": "Path to pretrained model or model identifier from huggingface.co/models"
         },
@@ -20,6 +20,14 @@ class ModelArguments:
     tokenizer_name: Optional[str] = field(
         default=None,
         metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"},
+    )
+    bm25_tokenizer_name: Optional[str] = field(
+        default="monologg/koelectra-base-v3-finetuned-korquad",
+        metadata={"help": "BM25 Pretrained tokenizer name or path if not the same as model_name"},
+    )
+    dpr_tokenizer_name: Optional[str] = field(
+        default='klue/bert-base', 
+        metadata={"help": "DPR Pretrained tokenizer name or path if not the same as model_name"}
     )
 
 
@@ -86,8 +94,9 @@ class DataTrainingArguments:
         default=64, metadata={"help": "Define how many clusters to use for faiss."}
     )
     top_k_retrieval: int = field(
-        default=30,
+        default=20,
         metadata={"help": "Define how many top-k passages to retrieve based on similarity."},
     )
     use_faiss: bool = field(default=False, metadata={"help": "Whether to build with faiss"})
-    bm25: bool = field(default=True, metadata={"help": "Whether to use BM25"})
+    rt_type: str = field(default='bm25', metadata={"help": "Whether to use BM25"})
+    dpr_encoder_path : str = field(default='./dense_retireval', metadata={"help": "path of trained dpr encoder"})

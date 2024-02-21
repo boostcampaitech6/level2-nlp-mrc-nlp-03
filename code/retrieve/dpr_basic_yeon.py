@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 from pprint import pprint
 
 from sklearn.feature_extraction.text import TfidfVectorizer
-from datasets import Dataset, concatenate_datasets, load_from_disk
+from datasets import Dataset, concatenate_datasets, load_from_disk, load_dataset
 
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -15,16 +15,17 @@ import torch.nn.functional as F
 import time
 from contextlib import contextmanager
 from typing import List, Tuple, NoReturn, Any, Optional, Union
-from datasets import Dataset
 import os, pickle
 
-from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     BertModel, BertPreTrainedModel,
     AdamW, get_linear_schedule_with_warmup,
     TrainingArguments,
+    HfArgumentParser,
 )
+
+from base_retrieval_class import Retrieval
 
 # 난수 고정
 def set_seed(random_seed):
@@ -72,27 +73,138 @@ class BertEncoder(BertPreTrainedModel):
         pooled_output = outputs[1]
         return pooled_output
 
-class DenseRetrieval:
+class DenseRetrieval(Retrieval):
 
-    # def __init__(self, args, dataset, num_neg, tokenizer, p_encoder, q_encoder):
-    def __init__(self, args, dataset, tokenizer, num_neg : Optional[int] = 2) -> NoReturn:
+    def __init__(
+            self, 
+            args,
+            tokenize_fn, 
+            data_path: Optional[str] = "../data/",
+            context_path: Optional[str] = "wikipedia_documents.json",) -> NoReturn:
+        """
+        Arguments:
+            tokenize_fn:
+                기본 text를 tokenize해주는 함수입니다.
+                아래와 같은 함수들을 사용할 수 있습니다.
+                - lambda x: x.split(' ')
+                - Huggingface Tokenizer
+                - konlpy.tag의 Mecab
 
-        '''
-        학습과 추론에 사용될 여러 셋업을 마쳐봅시다.
-        '''
+            data_path:
+                데이터가 보관되어 있는 경로입니다.
+
+            context_path:
+                Passage들이 묶여있는 파일명입니다.
+
+            data_path/context_path가 존재해야합니다.
+
+        Summary:
+            Passage 파일을 불러오고 DenseRetrieval을 선언하는 기능을 합니다.
+        """
+
+        # wikidocs.json 작업용으로 끌어오기
+        super().__init__(tokenize_fn, data_path, context_path)
 
         self.args = args
-        self.dataset = dataset
-        self.num_neg = num_neg
+        self.dataset = None # encoder 학습 시 사용하는 데이터셋
+        self.num_neg = None # negative passage 개수 지정
 
-        self.tokenizer = tokenizer
+        self.tokenizer = tokenize_fn # 토크나이징 함수 지정
         self.p_encoder = None # get_dense_encoder()로 생성합니다.
         self.q_encoder = None # get_dense_encoder()로 생성합니다.
 
-        self.p_embs = None # 이후 faiss 작업용. get_relevant_doc 또는 get_relevant_doc_bulk로부터 받아옵니다. 
+        self.p_embedding = None # wikipedia.json 임베딩 파일. 없으면 get_relevant_doc_bulk로부터 받아옵니다. 
         self.indexer = None # build_faiss()로 생성합니다.
 
-        self.prepare_in_batch_negative(num_neg=self.num_neg)
+        self.prepare_valid_dataset()
+
+    def prepare_valid_dataset(self, contexts=None, tokenizer=None):
+        if contexts is None:
+            contexts = self.contexts
+        
+        if tokenizer is None:
+            tokenizer = self.tokenizer
+
+        # valid_seqs = tokenizer(dataset['context'], padding="max_length", truncation=True, return_tensors='pt')
+        valid_seqs = tokenizer(self.contexts, padding="max_length", truncation=True, return_tensors='pt')
+        passage_dataset = TensorDataset(
+            valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
+        )
+        self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size)
+
+    def get_dense_encoding(self, encoder_path : Optional[str] = None, train_dataset=None, num_neg : Optional[int] = 8, model_checkpoint:Optional[str] = None) -> NoReturn:
+        '''
+            Summary:
+                train된 모델(passage encoder과 query encoder)이 없으면 모델을 학습시키고
+                모델을 pickle로 저장합니다.
+                미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
+            Arguments:
+                encoder_path (str):
+                    passage와 query의 encoder, passage embedding 등이 저장된(혹은 저장하고자 하는) 폴더의 경로를 받습니다.
+                train_dataset (Union[pd.Dataframe, Dataset], Optional): 
+                    학습시 사용할 데이터셋을 지정합니다. 
+                num_neg (int, Optional): Defaults to 8.
+                    학습 시 사용할 negative passage의 개수
+                model_checkpoint (str, Optional):
+                    학습 시 사용할 모델을 받습니다.
+                
+                encoder_path가 존재해야합니다.
+
+            Note:
+                기존 모델이 존재하는 경우, encoder_path만 입력합니다. 
+                새로운 학습이 필요한 경우, encoder_path에 존재하는 encoder 삭제 후, encoder_path, train_dataset, num_neg, model_checkpoint 모두 기입이 필요합니다.
+        '''
+
+        p_ecd_name = f'trained_p_encoder.bin'
+        q_ecd_name = f'trained_q_encoder.bin'
+        p_embs_name = f'dense_embedding.bin'
+        scores_rank_name = f'dpr_scores_rank.bin'
+        
+        assert encoder_path is not None, \
+        'encoder의 위치를 파악하거나 encoder를 저장하기 위한 폴더 경로가 필요합니다. \
+        (참고) passage와 query encoder 모두 동일한 경로로 위치해주세요'
+
+        p_ecd_path = os.path.join(encoder_path, p_ecd_name)
+        q_ecd_path = os.path.join(encoder_path, q_ecd_name)
+        self.p_embs_path = os.path.join(encoder_path, p_embs_name)
+        self.scores_rank_path = os.path.join(encoder_path, scores_rank_name)
+
+        if os.path.isfile(p_ecd_path) and os.path.isfile(q_ecd_path):
+
+            with open(p_ecd_path, 'rb') as f:
+                self.p_encoder = pickle.load(f)
+            with open(q_ecd_path, 'rb') as f:
+                self.q_encoder = pickle.load(f)
+            
+            print('Passage and query encoder pickle load.')
+            
+            if os.path.isfile(self.p_embs_path):
+                with open(self.p_embs_path, 'rb') as f:
+                    self.p_embedding = pickle.load(f)
+            if os.path.isfile(self.scores_rank_path):
+                with open(self.scores_rank_path, 'rb') as f:
+                    self.tuple_scores_rank = pickle.load(f)
+        else :
+            assert model_checkpoint is not None, 'encoder를 학습하기 위한 모델이 필요합니다.'
+            assert train_dataset is not None, 'encoder를 학습하기 위한 데이터셋이 필요합니다.'
+            assert num_neg is not None, 'encoder를 학습하기 위한 num_neg값이 필요합니다.'
+
+            self.dataset = train_dataset
+            self.num_neg = num_neg
+
+            print('Build encoder.')
+            self.prepare_in_batch_negative(dataset=self.dataset, num_neg=self.num_neg)
+
+            self.p_encoder = BertEncoder.from_pretrained(model_checkpoint, cache_dir='../dpr_encoder/cache').to(self.args.device)
+            self.q_encoder = BertEncoder.from_pretrained(model_checkpoint, cache_dir='../dpr_encoder/cache').to(self.args.device)
+
+            self.train()
+
+            with open(p_ecd_path, 'wb') as f:
+                pickle.dump(self.p_encoder, f)
+            with open(q_ecd_path, 'wb') as f:
+                pickle.dump(self.q_encoder, f)
+            print('Encoder trained and pickle saved.')
 
     def prepare_in_batch_negative(self, dataset=None, num_neg = None, tokenizer=None) -> NoReturn:
 
@@ -138,68 +250,13 @@ class DenseRetrieval:
 
         self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=self.args.per_device_train_batch_size)
 
-        valid_seqs = tokenizer(dataset['context'], padding="max_length", truncation=True, return_tensors='pt')
-        passage_dataset = TensorDataset(
-            valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
-        )
-        self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size)
 
-
-    def get_dense_encoding(self, encoder_path : Optional[str] = None, model_checkpoint:Optional[str] = None) -> NoReturn:
-        '''
-            Summary:
-                train된 모델(passage encoder과 query encoder)이 없으면 모델을 학습시키고
-                모델을 pickle로 저장합니다.
-                미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
-
-            Arguments:
-                encoder_path (Optional[str]):
-                    passage와 query의 encoder가 저장된(혹은 저장하고자 하는) 폴더의 경로를 받습니다.
-                model_checkpoint :
-                    미리 학습된 모델이 없을 경우, 학습에 사용하려는 모델을 받습니다.
-            Note:
-                기존 모델이 존재하는 경우, encoder_path만 입력하면 됩니다.
-                새로운 학습이 필요한 경우, encoder_path에 존재하는 encoder 삭제 후, model_checkpoint도 같이 기입해주시면 됩니다.
-        '''
-
-        p_ecd_name = f'trained_p_encoder.bin'
-        q_ecd_name = f'trained_q_encoder.bin'
-
-        assert encoder_path is not None, \
-        'encoder의 위치를 파악하거나 encoder를 저장하기 위한 폴더 경로가 필요합니다. \
-        (참고) passage와 query encoder 모두 동일한 경로로 위치해주세요'
-
-
-        p_ecd_path = os.path.join(encoder_path, p_ecd_name)
-        q_ecd_path = os.path.join(encoder_path, q_ecd_name)
-
-
-        if os.path.isfile(p_ecd_path) and os.path.isfile(q_ecd_path):
-            with open(p_ecd_path, 'rb') as f:
-                self.p_encoder = pickle.load(f)
-            with open(q_ecd_path, 'rb') as f:
-                self.q_encoder = pickle.load(f)
-            print('Passage and query encoder pickle load.')
-        else :
-            assert model_checkpoint is not None, \
-            'encoder를 학습하기 위한 모델이 필요합니다.'
-
-            print('Build encoder.')
-            self.p_encoder = BertEncoder.from_pretrained(model_checkpoint, cache_dir='../dpr_encoder/cache').to(self.args.device)
-            self.q_encoder = BertEncoder.from_pretrained(model_checkpoint, cache_dir='../dpr_encoder/cache').to(self.args.device)
-
-            self.train()
-
-            with open(p_ecd_path, 'wb') as f:
-                pickle.dump(self.p_encoder, f)
-            with open(q_ecd_path, 'wb') as f:
-                pickle.dump(self.q_encoder, f)
-            print('Encoder trained and pickle saved.')
 
     def train(self, args=None) -> NoReturn:
 
         if args is None:
             args = self.args
+        
         batch_size = args.per_device_train_batch_size
 
         # Optimizer
@@ -273,78 +330,8 @@ class DenseRetrieval:
 
                     del p_inputs, q_inputs
 
-    def retrieve(
-        self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
-    ) -> Union[Tuple[List, List], pd.DataFrame]:
-        print(isinstance(query_or_dataset, Dataset))
-        '''
-        Arguments:
-            query_or_dataset (Union[str, Dataset]):
-                str이나 Dataset으로 이루어진 Query를 받습니다.
-                str 형태인 하나의 query만 받으면 `get_relavant_doc`을 통해 유사도를 구합니다.
-                Datset 형태는 query를 포함한 HF.Datset을 받습니다.
-                이 경우 `get_relevant_doc_bulk`를 통해 유사도를 구합니다.
-            topk (Optional[int], optional): Defaults to 1.
-                상위 몇 개의 passage를 사용할 것인지 지정합니다.
-
-        Returns:
-            1개의 Query를 받는 경우  -> Tuple(List, List)
-            다수의 Query를 받는 경우 -> pd.DataFrame
-
-        Note:
-            다수의 Query를 받는 경우,
-                Ground Truth가 있는 Query  (train/valid)  -> 기존 Ground Truth Passage를 같이 반환합니다.
-                Ground Truth가 없는 Query  (test)         -> Retriever한 Passage만 반환합니다.
-        '''
-
-        assert self.p_encoder is not None and self.q_encoder is not None, "get_dense_encoding() 메소드를 먼저 수행해줘야합니다."
-
-        if isinstance(query_or_dataset, str):
-            doc_prod_score, rank = self.get_relevant_doc(query_or_dataset, k=topk)
-            print(f"[Search Query] {query_or_dataset}\n")
-
-            for i, idx in enumerate(rank):
-                print(f"Top-{i + 1}th Passage (Index {idx})")
-                pprint(self.dataset['context'][idx])
-
-            return (doc_prod_scores, [self.dataset['context'][pid] for pid in range(rank)])
-        elif isinstance(query_or_dataset, Dataset):
-        # else:
-
-            # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
-            total = []
-            with timer('query exhastive search'):
-                doc_prod_scores, ranks = self.get_relevant_doc_bulk(
-                    query_or_dataset['question'], k=topk
-                )
-
-            for idx, example in enumerate(
-                tqdm(query_or_dataset, desc='Dense retrieval: ')
-            ):
-                tmp = {
-                    # Query와 해당 id를 반환합니다.
-                    'question': example['question'],
-                    'id' : example['id'],
-
-                    # Retrieve한 Passage의 id, context를 반환합니다.
-                    'context_id': ranks[idx],
-                    'context': ''.join([self.dataset['context'][pid] for pid in ranks[idx]])
-                }
-
-                if 'context' in example.keys() and 'answers' in example.keys():
-                    # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
-                    tmp['origin_context'] = example['context']
-                    tmp['answers'] = example['answers']
-
-                total.append(tmp)
-
-            cqas = pd.DataFrame(total)
-            return cqas
-        else:
-            assert False, "Data의 타입을 확인해주세요. str, Dataset(not dataframe)형태가 아니면 안나옴."
-
     def get_relevant_doc(
-        self, query:str, k:Optional[int]=1, args=None, p_encoder=None, q_encoder=None
+        self, query:str, k:Optional[int]=15, args=None, p_encoder=None, q_encoder=None
       ) -> Tuple[List, List]:
 
         if args is None:
@@ -380,13 +367,11 @@ class DenseRetrieval:
 
         dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True)
-        print(dot_prod_scores.shape, rank.shape)
-        # print(dot_prod_scores[0].shape)
         return dot_prod_scores[0][rank][:k].tolist(), rank[0][:k].tolist()
 
 
-    def get_relevant_doc_bulk(
-        self, queries: List, k: Optional[int]=1, args=None, p_encoder=None, q_encoder=None
+    def get_relevant_doc_bulk( # k는 20이상이면 그냥 reader 개선하는게 좋음
+        self, queries: List, k: Optional[int]=20, args=None, p_encoder=None, q_encoder=None
     ) -> Tuple[List, List]:
         if args is None:
             args = self.args
@@ -431,30 +416,33 @@ class DenseRetrieval:
 
             q_embs = torch.stack(q_embs, dim=0).view(len(self.passage_dataloader.dataset), -1)  # (num_passage, emb_dim)
 
-            # # q_emb = q_encoder(**q_seqs_val).to('cpu')  # (num_query=1, emb_dim)
-            # q_emb = q_encoder(**q_seqs_val).to(args.device)  # (num_query=1, emb_dim)
+            p_embs = None
+            if self.p_embedding is None:
+                p_embs = []
+                # for batch in self.passage_dataloader:
+                for batch in tqdm(self.passage_dataloader, desc='wiki passage encoding: '):
 
-            p_embs = []
-            # for batch in self.passage_dataloader:
-            for batch in tqdm(q_dataloader, desc='passage encoding: '):
+                    batch = tuple(t.to(args.device) for t in batch)
+                    p_inputs = {
+                        'input_ids': batch[0],
+                        'attention_mask': batch[1],
+                        'token_type_ids': batch[2]
+                    }
+                    p_emb = p_encoder(**p_inputs).to('cpu')
+                    # p_emb = p_encoder(**p_inputs).to(args.device)
+                    p_embs.append(p_emb)
 
-                batch = tuple(t.to(args.device) for t in batch)
-                p_inputs = {
-                    'input_ids': batch[0],
-                    'attention_mask': batch[1],
-                    'token_type_ids': batch[2]
-                }
-                p_emb = p_encoder(**p_inputs).to('cpu')
-                # p_emb = p_encoder(**p_inputs).to(args.device)
-                p_embs.append(p_emb)
+                p_embs = torch.stack(p_embs, dim=0).view(len(self.passage_dataloader.dataset), -1)  # (num_passage, emb_dim)
+                with open(self.p_embs_path, "wb") as file:
+                    pickle.dump(self.p_embedding, file)
 
-        p_embs = torch.stack(p_embs, dim=0).view(len(self.passage_dataloader.dataset), -1)  # (num_passage, emb_dim)
+            else:
+                p_embs = self.p_embedding
 
         dot_prod_scores = torch.matmul(q_embs, torch.transpose(p_embs, 0, 1))
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True)
         d, r = [], []
-        
-        # for i in range(rank.shape[0]):
+
         for i in tqdm(range(rank.shape[0]), desc=': '):
             d.append(dot_prod_scores[i][rank][:k].tolist())
             r.append(rank[i][:k].tolist())
@@ -474,8 +462,44 @@ def main():
     train_dataset = load_dataset("squad_kor_v1")["train"]
 
 
+    # # 메모리가 부족한 경우 일부만 사용하세요 !
+    num_sample = 20000
+    sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
+    train_dataset = train_dataset[sample_idx]
 
-    org_dataset = load_from_disk('../data/train_dataset')
+    args = TrainingArguments(
+        evaluation_strategy="epoch",
+        output_dir="dense_retrieval",
+        learning_rate=3e-4,
+        per_device_train_batch_size=4,  # 8이면 top 29 31, 32이면 top accuracy 
+        per_device_eval_batch_size=4,
+        num_train_epochs=3,
+        weight_decay=0.01
+    )
+    model_checkpoint = "klue/bert-base"
+
+    # # 혹시 위에서 사용한 encoder가 있다면 주석처리 후 진행해주세요 (CUDA ...)
+    tokenize_fn = AutoTokenizer.from_pretrained(model_checkpoint)
+    # p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
+    # q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
+
+    # Retriever는 아래와 같이 사용할 수 있도록 코드를 짜봅시다.
+    retriever = DenseRetrieval(
+        args=args,
+        tokenize_fn=tokenize_fn,
+        data_path="../../data",
+        context_path="wikipedia_documents.json"
+    )
+
+    retriever.get_dense_encoding(
+        encoder_path='../dense_retrieval', 
+        train_dataset=train_dataset, 
+        num_neg=8, 
+        model_checkpoint=model_checkpoint
+    )
+
+
+    org_dataset = load_from_disk('../../data/train_dataset')
 
     full_ds = concatenate_datasets(
         [
@@ -486,42 +510,10 @@ def main():
     print("*" * 40, "query dataset", "*" * 40)
     print(full_ds)
 
-    # # 메모리가 부족한 경우 일부만 사용하세요 !
-    # num_sample = 1500
-    # sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
-    # train_dataset = train_dataset[sample_idx]
-
-    args = TrainingArguments(
-        output_dir="dense_retireval",
-        evaluation_strategy="epoch",
-        learning_rate=3e-4,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        num_train_epochs=2,
-        weight_decay=0.01
-    )
-    model_checkpoint = "klue/bert-base"
-
-    # # 혹시 위에서 사용한 encoder가 있다면 주석처리 후 진행해주세요 (CUDA ...)
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    # p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
-    # q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
-
-    # Retriever는 아래와 같이 사용할 수 있도록 코드를 짜봅시다.
-    retriever = DenseRetrieval(
-        args=args,
-        dataset=full_ds,
-        num_neg=2,
-        tokenizer=tokenizer
-    )
-
     
-    retriever.get_dense_encoding(encoder_path='./dpr_encoder', model_checkpoint=model_checkpoint)
-
-
-    
-    df = retriever.retrieve(query_or_dataset=full_ds, topk=5)
+    df = retriever.retrieve(query_or_dataset=full_ds, topk=15)
     print(df.head())
+    df.to_c
 
 
 

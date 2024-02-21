@@ -4,7 +4,7 @@
 """
 
 
-from typing import Callable, Dict, List, NoReturn, Tuple
+from typing import Callable, Dict, List, NoReturn, Tuple, Optional
 
 import logging
 import sys
@@ -15,6 +15,7 @@ from arguments import DataTrainingArguments, ModelArguments
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk
 from retrieve.bm25 import BM25
 from retrieve.tf_idf import TfidfRetrieval
+from retrieve.dpr_editing import BertEncoder, DenseRetrieval
 from trainer_qa import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,
@@ -68,6 +69,14 @@ def main():
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
         use_fast=True,
     )
+    bm25_tokenizer = AutoTokenizer.from_pretrained(
+        model_args.bm25_tokenizer_name,
+        use_fast=True,
+    )
+    dpr_tokenizer = AutoTokenizer.from_pretrained(
+        model_args.dpr_tokenizer_name,
+        use_fast=True
+    )
     model = AutoModelForQuestionAnswering.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -76,12 +85,28 @@ def main():
 
     # True일 경우 : run passage retrieval
     if data_args.eval_retrieval:
-        datasets = run_sparse_retrieval(
-            tokenizer.tokenize,
-            datasets,
-            training_args,
-            data_args,
-        )
+        if data_args.rt_type=='bm25':
+            datasets = run_sparse_retrieval(
+                bm25_tokenizer.tokenize,
+                datasets,
+                training_args,
+                data_args,
+            )
+        elif data_args.rt_type=='dpr':
+            dpr_args = TrainingArguments(
+                learning_rate=3e-4,
+                per_device_train_batch_size=8,  # 8이면 top 29 31, 32이면 top accuracy 
+                per_device_eval_batch_size=8,
+                num_train_epochs=3,
+                weight_decay=0.01
+            )
+            datasets = run_sparse_retrieval(
+                dpr_tokenizer.tokenize,
+                datasets,
+                training_args,
+                data_args,
+                dpr_args,
+            )
 
     # eval or predict mrc model
     if training_args.do_eval or training_args.do_predict:
@@ -93,25 +118,37 @@ def run_sparse_retrieval(
     datasets: DatasetDict,
     training_args: TrainingArguments,
     data_args: DataTrainingArguments,
+    dpr_train_args : TrainingArguments=None,
 ) -> DatasetDict:
     # Query에 맞는 Passage들을 Retrieval 합니다.
     logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
-    if data_args.bm25:
+    if data_args.rt_type == 'bm25':
         print(">>>>> BM25를 사용합니다.")
         retriever = BM25(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )  # BM25를 사용하는 경우
-    else:
+    elif data_args.rt_type == 'tf_idf':
         print(">>>>> TF-IDF를 사용합니다.")
         retriever = TfidfRetrieval(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )  # TF-IDF 사용하는 경우
+    elif data_args.rt_type == 'dpr':
+        print(">>>>> DPR을 사용합니다.")
+        retriever = DenseRetrieval(
+            args=dpr_train_args,
+            tokenize_fn=tokenize_fn,
+            data_path=data_args.data_path,
+            context_path=data_args.context_path,
+        )
 
-    retriever.get_sparse_embedding()
+    if data_args.rt_type != 'dpr':
+        retriever.get_sparse_embedding()
+    else:
+        retriever.get_dense_encoding(data_args.dpr_encoder_path)
 
     if data_args.use_faiss:
         retriever.build_faiss(num_clusters=data_args.num_clusters)
@@ -186,7 +223,7 @@ def run_mrc(
             stride=data_args.doc_stride,
             return_overflowing_tokens=True,
             return_offsets_mapping=True,
-            # return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
+            return_token_type_ids=False,  # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
             padding="max_length" if data_args.pad_to_max_length else False,
         )
 
