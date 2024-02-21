@@ -15,6 +15,7 @@ from arguments import DataTrainingArguments, ModelArguments
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk
 from retrieve.bm25 import BM25
 # from retrieve.new_bm25 import BM25Retrieval as BM25
+from retrieve.dpr_bm25_rerank import BM25_DPRpipeline
 from retrieve.tf_idf import TfidfRetrieval
 from trainer_qa import QuestionAnsweringTrainer
 from retrieve.dpr import DenseRetrieval
@@ -123,6 +124,20 @@ def run_sparse_retrieval(
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         ) # DPR 사용하는 경우
+    elif data_args.retrieval_type == "bm25_dpr":
+        print(">>>>> DPR + BM25를 사용합니다.")
+        bm25 = BM25(
+            tokenize_fn=tokenize_fn,
+            data_path=data_args.data_path,
+            context_path=data_args.context_path,
+        )
+        dpr = DenseRetrieval(
+            tokenize_fn=tokenize_fn,
+            data_path=data_args.data_path,
+            context_path=data_args.context_path,
+        )
+        retriever = BM25_DPRpipeline(bm25, dpr)
+
 
     retriever.get_sparse_embedding()
 

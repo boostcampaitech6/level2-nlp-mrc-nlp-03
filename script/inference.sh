@@ -39,7 +39,7 @@ python3 code/inference.py \
     --num_clusters 64 \
     --top_k_retrieval 20 \
     --use_faiss False \
-    --retrieval_type dpr \
+    --retrieval_type bm25_dpr \
     --output_dir code/outputs/test_dataset/ \
     --overwrite_output_dir True \
     --do_eval False \
