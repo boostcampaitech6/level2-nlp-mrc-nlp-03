@@ -1,4 +1,6 @@
-import json
+from typing import List, NoReturn, Optional, Tuple, Union
+
+import json, os, pickle
 import random
 from pprint import pprint
 
@@ -6,9 +8,12 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import time
+
+from contextlib import contextmanager
 from datasets import load_dataset
-from sklearn.feature_extraction.text import TfidfVectorizer
 from torch.utils.data import DataLoader, TensorDataset
+from .base_retrieval_class import Retrieval
 from tqdm import tqdm, trange
 from transformers import (
     AdamW,
@@ -19,6 +24,11 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
+@contextmanager
+def timer(name):
+    t0 = time.time()
+    yield
+    print(f"[{name}] done in {time.time() - t0:.3f} s")
 
 class BertEncoder(BertPreTrainedModel):
     def __init__(self, config):
@@ -34,58 +44,205 @@ class BertEncoder(BertPreTrainedModel):
 
         pooled_output = outputs[1]
         return pooled_output
-
-
-class DenseRetrieval:
-    def __init__(self, args, dataset, num_neg, tokenizer, p_encoder, q_encoder):
-        """학습과 추론에 필요한 객체들을 받아서 속성으로 저장합니다.
-
-        객체가 instantiate될 때 in-batch negative가 생긴 데이터를 만들도록 함수를 수행합니다.
+    
+class DenseRetrieval(Retrieval):
+    def __init__(
+        self,
+        tokenize_fn,
+        data_path: Optional[str] = "../data/",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> NoReturn:
         """
-        self.args = args
-        self.dataset = dataset
-        self.num_neg = num_neg
+        Arguments:
+            tokenize_fn:
+                기본 text를 tokenize해주는 함수입니다.
+                아래와 같은 함수들을 사용할 수 있습니다.
+                - lambda x: x.split(' ')
+                - Huggingface Tokenizer
+                - konlpy.tag의 Mecab
 
-        self.tokenizer = tokenizer
-        self.p_encoder = p_encoder
-        self.q_encoder = q_encoder
+            data_path:
+                데이터가 보관되어 있는 경로입니다.
 
-        self.prepare_in_batch_negative(num_neg=num_neg)
+            context_path:
+                Passage들이 묶여있는 파일명입니다.
 
-    def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None):
+            data_path/context_path가 존재해야합니다.
+
+        Summary:
+            Passage 파일을 불러오고 TfidfVectorizer를 선언하는 기능을 합니다.
+        """
+        
+        super().__init__(tokenize_fn, data_path, context_path)
+        self.model_checkpoint = "bert-base-multilingual-cased"
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
+        self.prepare_encoders()
+
+    def prepare_encoders(self, encoder_path="../models/dpr"):
+        """
+        Summary:
+            q_encoder와 p_encoder를 반환하는 함수입니다.
+            만약 이미 학습된 encoder가 있다면 불러오고, 없다면 새로 만듭니다.
+        """
+        q_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_q_encoder")
+        p_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_p_encoder")
+
+        if os.path.exists(q_encoder_path) and os.path.exists(p_encoder_path):
+            self.q_encoder = BertEncoder.from_pretrained(q_encoder_path)
+            self.p_encoder = BertEncoder.from_pretrained(p_encoder_path)
+            print("Encoder Path : ", q_encoder_path, p_encoder_path)
+
+            if torch.cuda.is_available():
+                self.q_encoder.to('cuda')
+                self.p_encoder.to('cuda')
+            print("Encoder is loaded.")
+        else:
+            self.train()
+            print("Encoder is trained.")
+            self.save_encoder()
+            print("Encoder is saved.")
+        
+    def get_sparse_embedding(self):
+        with timer("Dense Passage Embedding"):
+            # Pickle을 저장합니다.
+            pickle_name = "dense_embedding.bin"
+            emb_path = os.path.join(self.data_path, pickle_name)
+
+            if os.path.isfile(emb_path):
+                with open(emb_path, "rb") as file:
+                    self.p_embedding = pickle.load(file)
+                print("Dense Embedding load.")
+            else:
+                self.p_embedding = self.embedding_passage()
+                with open(emb_path, "wb") as file:
+                    pickle.dump(self.p_embedding, file)
+                print("Dense Embedding saved.")
+        self.p_embedding = torch.Tensor(self.p_embedding)
+
+    def embedding_passage(self):
+        """
+        Summary:
+            Passage를 받아서 embedding을 반환합니다.
+        """
+        if torch.cuda.is_available():
+            self.p_encoder.to('cuda')
+
+        with torch.no_grad():
+            self.p_encoder.eval()
+            p_embs = []
+
+            for p in tqdm(self.contexts):
+                p = self.tokenizer(p, padding="max_length", truncation=True, return_tensors='pt').to('cuda')
+                p_emb = self.p_encoder(**p).to('cpu').numpy()
+                p_embs.append(p_emb)
+
+            p_embs = torch.Tensor(p_embs).squeeze()
+            return p_embs
+        
+    def embedding_queries(self, queries):
+        """
+        Summary:
+            Query를 받아서 embedding을 반환합니다.
+        """
+        if torch.cuda.is_available():
+            self.q_encoder.to('cuda')
+
+        with torch.no_grad():
+            self.q_encoder.eval()
+            q_embs = []
+
+            for q in tqdm(queries):
+                q = self.tokenizer(q, padding="max_length", truncation=True, return_tensors='pt').to('cuda')
+                q_emb = self.q_encoder(**q).to('cpu').numpy()
+                q_embs.append(q_emb)
+            
+            q_embs = torch.Tensor(q_embs).squeeze()
+            return q_embs
+        
+    def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
+        """
+        Arguments:
+            query (str):
+                하나의 Query를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+        """
+
+        with timer("transform"):
+            q_embedding = self.embedding_queries([query])
+
+        with timer("query ex search"):
+            result = torch.matmul(q_embedding, torch.transpose(self.p_embedding, 0, 1))
+            sorted_result = torch.argsort(result, dim=1, descending=True).squeeze()
+
+        doc_score = result.squeeze()[sorted_result].tolist()[:k]
+        doc_indices = sorted_result.tolist()[:k]
+        return doc_score, doc_indices
+
+    def get_relevant_doc_bulk(self, queries: List, k: Optional[int] = 1) -> Tuple[List, List]:
+        """
+        Arguments:
+            queries (List):
+                하나의 Query를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+        """
+        # Pickle을 저장합니다.
+        dpr_ranking = "dpr_ranking.bin"
+        dpr_scores = "dpr_scores.bin"
+        dpr_ranking_path = os.path.join(self.data_path, dpr_ranking)
+        dpr_scores_path = os.path.join(self.data_path, dpr_scores)
+
+        if os.path.isfile(dpr_ranking_path) and os.path.isfile(dpr_scores_path):
+            with open(dpr_ranking_path, "rb") as file:
+                doc_indices = pickle.load(file)
+            with open(dpr_scores_path, "rb") as file:
+                doc_scores = pickle.load(file)
+        else:
+            with timer("transform"):
+                q_embedding = self.embedding_queries(queries)
+
+            with timer("query ex search"):
+                print(type(q_embedding), type(self.p_embedding))
+                result = torch.matmul(q_embedding, torch.transpose(self.p_embedding, 0, 1))
+                
+                doc_scores = []
+                doc_indices = []
+                for i in range(result.shape[0]):
+                    sorted_result = torch.argsort(result[i, :], dim=0, descending=True)
+                    doc_scores.append(result[i, :][sorted_result].tolist())
+                    doc_indices.append(sorted_result.tolist())
+
+            with open(dpr_ranking_path, "wb") as file:
+                pickle.dump(doc_indices, file)
+            with open(dpr_scores_path, "wb") as file:
+                pickle.dump(doc_scores, file)
+            
+        doc_scores = [doc_score[:k] for doc_score in doc_scores]
+        doc_indices = [doc_index[:k] for doc_index in doc_indices]
+        return doc_scores, doc_indices
+    
+    def prepare_in_batch_negative(self, dataset=None, tokenizer=None):
         """Huggingface의 Dataset을 받아오면, in-batch negative를 추가해서 Dataloader를 만들어줍니다."""
         if dataset is None:
+            self.dataset = load_dataset("squad_kor_v1")
             dataset = self.dataset
+        # train_dataset = dataset['train']
+        train_dataset = dataset['train'][:20000]
+        valid_dataset = dataset['validation']
+        print("Train dataset is loaded. Train dataset length: ", len(train_dataset))
+        print("Validation dataset is loaded. Validation dataset length: ", len(valid_dataset))
 
         if tokenizer is None:
             tokenizer = self.tokenizer
 
-        # 1. In-Batch-Negative 만들기
-        # CORPUS를 np.array로 변환해줍니다.
-        corpus = np.array(list({example for example in dataset["context"]}))
-        p_with_neg = []
-
-        for c in dataset["context"]:
-            while True:
-                neg_idxs = np.random.randint(len(corpus), size=num_neg)
-
-                if c not in corpus[neg_idxs]:
-                    p_neg = corpus[neg_idxs]
-
-                    p_with_neg.append(c)
-                    p_with_neg.extend(p_neg)
-                    break
-
         # 2. (Question, Passage) 데이터셋 만들어주기
-        q_seqs = tokenizer(
-            dataset["question"], padding="max_length", truncation=True, return_tensors="pt"
-        )
-        p_seqs = tokenizer(p_with_neg, padding="max_length", truncation=True, return_tensors="pt")
-
-        max_len = p_seqs["input_ids"].size(-1)
-        p_seqs["input_ids"] = p_seqs["input_ids"].view(-1, num_neg + 1, max_len)
-        p_seqs["attention_mask"] = p_seqs["attention_mask"].view(-1, num_neg + 1, max_len)
-        p_seqs["token_type_ids"] = p_seqs["token_type_ids"].view(-1, num_neg + 1, max_len)
+        q_seqs = tokenizer(train_dataset["question"], padding="max_length", truncation=True, return_tensors="pt")
+        p_seqs = tokenizer(train_dataset['context'], padding="max_length", truncation=True, return_tensors="pt")
 
         train_dataset = TensorDataset(
             p_seqs["input_ids"],
@@ -96,24 +253,28 @@ class DenseRetrieval:
             q_seqs["token_type_ids"],
         )
 
-        self.train_dataloader = DataLoader(
-            train_dataset, shuffle=True, batch_size=self.args.per_device_train_batch_size
-        )
-
-        valid_seqs = tokenizer(
-            dataset["context"], padding="max_length", truncation=True, return_tensors="pt"
-        )
-        passage_dataset = TensorDataset(
-            valid_seqs["input_ids"], valid_seqs["attention_mask"], valid_seqs["token_type_ids"]
-        )
-        self.passage_dataloader = DataLoader(
-            passage_dataset, batch_size=self.args.per_device_train_batch_size
-        )
-
+        batch_size = 8
+        self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
+    
     def train(self, args=None):
         if args is None:
-            args = self.args
-        batch_size = args.per_device_train_batch_size
+            args = TrainingArguments(
+                output_dir="dense_retireval",
+                evaluation_strategy="epoch",
+                learning_rate=2e-5,
+                per_device_train_batch_size=8,
+                per_device_eval_batch_size=8,
+                num_train_epochs=3,
+                weight_decay=0.01
+            )
+
+        self.prepare_in_batch_negative()
+        self.p_encoder = BertEncoder.from_pretrained(self.model_checkpoint)
+        self.q_encoder = BertEncoder.from_pretrained(self.model_checkpoint)
+
+        if torch.cuda.is_available():
+            self.p_encoder.to('cuda')
+            self.q_encoder.to('cuda')
 
         # Optimizer
         no_decay = ["bias", "LayerNorm.weight"]
@@ -168,168 +329,127 @@ class DenseRetrieval:
         self.q_encoder.zero_grad()
         torch.cuda.empty_cache()
 
-        train_iterator = tqdm(range(int(args.num_train_epochs)), desc="Epoch")
-        # for _ in range(int(args.num_train_epochs)):
-        for _ in train_iterator:
+        # train_iterator = tqdm(range(int(args.num_train_epochs)), desc="Epoch")
+        # for _ in train_iterator:
+        for i in range(int(args.num_train_epochs)):
+            print(f"Epoch {i+1}/{args.num_train_epochs}")
             with tqdm(self.train_dataloader, unit="batch") as tepoch:
-                for batch in tepoch:
+                for step, batch in enumerate(tepoch):
                     self.p_encoder.train()
                     self.q_encoder.train()
 
-                    targets = torch.zeros(batch_size).long()  # positive example은 전부 첫 번째에 위치하므로
-                    targets = targets.to(args.device)
+                    if torch.cuda.is_available():
+                        batch = tuple(t.cuda() for t in batch)
 
                     p_inputs = {
-                        "input_ids": batch[0]
-                        .view(batch_size * (self.num_neg + 1), -1)
-                        .to(args.device),
-                        "attention_mask": batch[1]
-                        .view(batch_size * (self.num_neg + 1), -1)
-                        .to(args.device),
+                        "input_ids": batch[0],
+                        "attention_mask": batch[1],
                         "token_type_ids": batch[2]
-                        .view(batch_size * (self.num_neg + 1), -1)
-                        .to(args.device),
                     }
 
                     q_inputs = {
-                        "input_ids": batch[3].to(args.device),
-                        "attention_mask": batch[4].to(args.device),
-                        "token_type_ids": batch[5].to(args.device),
+                        "input_ids": batch[3],
+                        "attention_mask": batch[4],
+                        "token_type_ids": batch[5],
                     }
 
                     p_outputs = self.p_encoder(**p_inputs)  # (batch_size*(num_neg+1), emb_dim)
                     q_outputs = self.q_encoder(**q_inputs)  # (batch_size*, emb_dim)
 
                     # Calculate similarity score & loss
-                    p_outputs = p_outputs.view(batch_size, self.num_neg + 1, -1)
-                    q_outputs = q_outputs.view(batch_size, 1, -1)
+                    sim_scores = torch.matmul(q_outputs, torch.transpose(p_outputs, 0, 1))
 
-                    sim_scores = torch.bmm(
-                        q_outputs, torch.transpose(p_outputs, 1, 2)
-                    ).squeeze()  # (batch_size, num_neg + 1)
-                    sim_scores = sim_scores.view(batch_size, -1)
+                    # target: position of positive samples = diagonal element
+                    targets = torch.arange(0, args.per_device_train_batch_size).long()
+                    if torch.cuda.is_available():
+                        targets = targets.to('cuda')
+
                     sim_scores = F.log_softmax(sim_scores, dim=1)
-
+                
                     loss = F.nll_loss(sim_scores, targets)
                     tepoch.set_postfix(loss=f"{str(loss.item())}")
 
                     loss.backward()
+                    if step % 100 == 0:
+                        print(f"Step {step} : Loss {loss.item()}")
                     optimizer.step()
                     scheduler.step()
-
                     self.p_encoder.zero_grad()
                     self.q_encoder.zero_grad()
-
                     global_step += 1
 
                     torch.cuda.empty_cache()
 
                     del p_inputs, q_inputs
 
-        return self.p_encoder, self.q_encoder
+    def evaluate(self, k=5, dataset=None, args=None):
+        if dataset == None:
+            valid_dataset = load_dataset("squad_kor_v1")['validation']
+            valid_corpus = list(set(valid_dataset["context"]))
+        else:
+            valid_dataset = dataset
 
-    def get_relevant_doc(self, query, k=1, args=None, p_encoder=None, q_encoder=None):
-        """Args query (str) 문자열로 주어진 질문입니다.
 
-        k (int)
-            상위 몇 개의 유사한 passage를 뽑을 것인지 결정합니다.
-
-        args
-            Configuration을 필요한 경우 넣어줍니다.
-            만약 None이 들어오면 self.args를 쓰도록 짜면 좋을 것 같습니다.
-
-        Do
-        --
-        1. query를 받아서 embedding을 하고
-        2. 전체 passage와의 유사도를 구한 후
-        3. 상위 k개의 문서 index를 반환합니다.
-        """
-        if args is None:
-            args = self.args
-
-        if p_encoder is None:
-            p_encoder = self.p_encoder
-
-        if q_encoder is None:
-            q_encoder = self.q_encoder
+        if torch.cuda.is_available():
+            self.q_encoder.to('cuda')
+            self.p_encoder.to('cuda')
+        self.p_encoder.eval()
+        self.q_encoder.eval()
+        
+        eval_embedding_path = os.path.join(self.data_path, "eval_embedding.bin")
 
         with torch.no_grad():
-            p_encoder.eval()
-            q_encoder.eval()
+            if os.path.isfile(eval_embedding_path) and False:
+                with open(eval_embedding_path, "rb") as file:
+                    p_embs = pickle.load(file)
+            else:
+                p_embs = []
+                for p in tqdm(valid_corpus, desc="Valid Embedding Passage"):
+                    p_inputs = self.tokenizer(p, padding="max_length", truncation=True, return_tensors='pt').to('cuda')
+                    p_outputs = self.p_encoder(**p_inputs).to('cpu').numpy()
+                    p_embs.append(p_outputs)
+                
+                with open(eval_embedding_path, "wb") as file:
+                    pickle.dump(p_embs, file)
+            p_embs = torch.Tensor(p_embs).squeeze()
 
-            q_seqs_val = self.tokenizer(
-                [query], padding="max_length", truncation=True, return_tensors="pt"
-            ).to(args.device)
-            q_emb = q_encoder(**q_seqs_val).to("cpu")  # (num_query=1, emb_dim)
+            # 2. valid_query embedding
+            correct = 0
+            for i in tqdm(range(len(valid_dataset))):
+                ground_truth = valid_dataset[i]['context']
+                query = valid_dataset[i]['question']
 
-            p_embs = []
-            for batch in self.passage_dataloader:
-                batch = tuple(t.to(args.device) for t in batch)
-                p_inputs = {
-                    "input_ids": batch[0],
-                    "attention_mask": batch[1],
-                    "token_type_ids": batch[2],
-                }
-                p_emb = p_encoder(**p_inputs).to("cpu")
-                p_embs.append(p_emb)
+                if not ground_truth in valid_corpus:
+                    valid_corpus.append(ground_truth)
 
-        p_embs = torch.stack(p_embs, dim=0).view(
-            len(self.passage_dataloader.dataset), -1
-        )  # (num_passage, emb_dim)
+                q_seqs_val = self.tokenizer([query], padding="max_length", truncation=True, return_tensors='pt').to('cuda')
+                q_emb = self.q_encoder(**q_seqs_val).to('cpu')
 
-        dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
-        rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
-        return rank[:k]
+                dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
+                rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
 
+                # print(f"Query : {query}")
+                # print(f"Ground Truth : {ground_truth}")
+                # for j in range(k):
+                #     print(f"Rank {j+1} : {valid_corpus[rank[j]]}")
+                #     print(f"Score {j+1} : {dot_prod_scores[0][rank[j]]}")
 
-def main():
-    # 데이터셋과 모델은 아래와 같이 불러옵니다.
-    train_dataset = load_dataset("squad_kor_v1")["train"]
+                if ground_truth in [valid_corpus[rank[i]] for i in range(k)]:
+                    correct += 1
 
-    # 메모리가 부족한 경우 일부만 사용하세요 !
-    num_sample = 1500
-    sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
-    train_dataset = train_dataset[sample_idx]
+            print(f"Accuracy : {correct/len(valid_dataset)}")
+    
+    def save_encoder(self, encoder_path="../models/dpr"):
+        q_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_q_encoder")
+        p_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_p_encoder")
 
-    args = TrainingArguments(
-        output_dir="dense_retireval",
-        evaluation_strategy="epoch",
-        learning_rate=3e-4,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        num_train_epochs=2,
-        weight_decay=0.01,
-    )
-    model_checkpoint = "klue/bert-base"
-
-    # 혹시 위에서 사용한 encoder가 있다면 주석처리 후 진행해주세요 (CUDA ...)
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
-    q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
-
-    # Retriever는 아래와 같이 사용할 수 있도록 코드를 짜봅시다.
-    retriever = DenseRetrieval(
-        args=args,
-        dataset=train_dataset,
-        num_neg=2,
-        tokenizer=tokenizer,
-        p_encoder=p_encoder,
-        q_encoder=q_encoder,
-    )
-    p_encoder, q_encoder = retriever.train()
-    torch.save(p_encoder, "./dense_passage_encoder")
-    torch.save(q_encoder, "./dense_query_encoder")
-
-    query = "제주도 시청의 주소는 뭐야?"
-    results = retriever.get_relevant_doc(query=query, k=5)
-
-    print(f"[Search Query] {query}\n")
-
-    indices = results.tolist()
-    for i, idx in enumerate(indices):
-        print(f"Top-{i + 1}th Passage (Index {idx})")
-        pprint(retriever.dataset["context"][idx])
+        self.q_encoder.save_pretrained(q_encoder_path)
+        self.p_encoder.save_pretrained(p_encoder_path)
 
 
 if __name__ == "__main__":
-    main()
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-cased")
+    dpr = DenseRetrieval(tokenizer.tokenize, "../data/", "wikipedia_documents.json")
+    dpr.prepare_encoders()
+    dpr.prepare_in_batch_negative()
+    dpr.evaluate(k=20)
