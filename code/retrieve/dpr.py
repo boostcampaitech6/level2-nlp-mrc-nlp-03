@@ -428,12 +428,6 @@ class DenseRetrieval(Retrieval):
                 dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
                 rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
 
-                # print(f"Query : {query}")
-                # print(f"Ground Truth : {ground_truth}")
-                # for j in range(k):
-                #     print(f"Rank {j+1} : {valid_corpus[rank[j]]}")
-                #     print(f"Score {j+1} : {dot_prod_scores[0][rank[j]]}")
-
                 if ground_truth in [valid_corpus[rank[i]] for i in range(k)]:
                     correct += 1
 
