@@ -70,6 +70,10 @@ def main():
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
         use_fast=True,
     )
+    bm25_tokenizer = AutoTokenizer.from_pretrained(
+        model_args.bm25_tokenizer_name,
+        use_fast=True,
+    )
     model = AutoModelForQuestionAnswering.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -79,7 +83,7 @@ def main():
     # True일 경우 : run passage retrieval
     if data_args.eval_retrieval:
         datasets = run_sparse_retrieval(
-            tokenizer.tokenize,
+            bm25_tokenizer.tokenize,
             datasets,
             training_args,
             data_args,
