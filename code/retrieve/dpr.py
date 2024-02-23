@@ -24,6 +24,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
+
 @contextmanager
 def timer(name):
     t0 = time.time()
@@ -75,17 +76,28 @@ class DenseRetrieval(Retrieval):
         
         super().__init__(tokenize_fn, data_path, context_path)
         self.model_checkpoint = "bert-base-multilingual-cased"
+        self.precision=16,
+        self.args = TrainingArguments(
+                output_dir="dense_retireval",
+                evaluation_strategy="epoch",
+                learning_rate=5e-5,
+                per_device_train_batch_size=32,
+                per_device_eval_batch_size=32,
+                num_train_epochs=3,
+                weight_decay=0.01,
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
+        self.scaler = torch.cuda.amp.GradScaler()
         self.prepare_encoders()
 
-    def prepare_encoders(self, encoder_path="../models/dpr"):
+    def prepare_encoders(self, encoder_path="./models/dpr"):
         """
         Summary:
             q_encoder와 p_encoder를 반환하는 함수입니다.
             만약 이미 학습된 encoder가 있다면 불러오고, 없다면 새로 만듭니다.
         """
-        q_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_q_encoder")
-        p_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_p_encoder")
+        q_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_{self.precision}_q_encoder")
+        p_encoder_path = os.path.join(encoder_path, f"{self.model_checkpoint}_{self.precision}_p_encoder")
 
         if os.path.exists(q_encoder_path) and os.path.exists(p_encoder_path):
             self.q_encoder = BertEncoder.from_pretrained(q_encoder_path)
@@ -105,7 +117,7 @@ class DenseRetrieval(Retrieval):
     def get_sparse_embedding(self):
         with timer("Dense Passage Embedding"):
             # Pickle을 저장합니다.
-            pickle_name = "dense_embedding.bin"
+            pickle_name = f"{self.model_checkpoint.replace('/', '-')}_{self.precision}_dense_embedding.bin"
             emb_path = os.path.join(self.data_path, pickle_name)
 
             if os.path.isfile(emb_path):
@@ -192,8 +204,8 @@ class DenseRetrieval(Retrieval):
             vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
         """
         # Pickle을 저장합니다.
-        dpr_ranking = "dpr_ranking.bin"
-        dpr_scores = "dpr_scores.bin"
+        dpr_ranking = f"{self.model_checkpoint.replace('/', '-')}_{self.precision}_dpr_ranking.bin"
+        dpr_scores = f"{self.model_checkpoint.replace('/', '-')}_{self.precision}_dpr_scores.bin"
         dpr_ranking_path = os.path.join(self.data_path, dpr_ranking)
         dpr_scores_path = os.path.join(self.data_path, dpr_scores)
 
@@ -253,20 +265,12 @@ class DenseRetrieval(Retrieval):
             q_seqs["token_type_ids"],
         )
 
-        batch_size = 8
+        batch_size = self.args.per_device_train_batch_size
         self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
     
     def train(self, args=None):
         if args is None:
-            args = TrainingArguments(
-                output_dir="dense_retireval",
-                evaluation_strategy="epoch",
-                learning_rate=2e-5,
-                per_device_train_batch_size=8,
-                per_device_eval_batch_size=8,
-                num_train_epochs=3,
-                weight_decay=0.01
-            )
+            args = self.args
 
         self.prepare_in_batch_negative()
         self.p_encoder = BertEncoder.from_pretrained(self.model_checkpoint)
@@ -353,34 +357,34 @@ class DenseRetrieval(Retrieval):
                         "token_type_ids": batch[5],
                     }
 
-                    p_outputs = self.p_encoder(**p_inputs)  # (batch_size*(num_neg+1), emb_dim)
-                    q_outputs = self.q_encoder(**q_inputs)  # (batch_size*, emb_dim)
-
-                    # Calculate similarity score & loss
-                    sim_scores = torch.matmul(q_outputs, torch.transpose(p_outputs, 0, 1))
-
                     # target: position of positive samples = diagonal element
                     targets = torch.arange(0, args.per_device_train_batch_size).long()
                     if torch.cuda.is_available():
                         targets = targets.to('cuda')
 
-                    sim_scores = F.log_softmax(sim_scores, dim=1)
-                
-                    loss = F.nll_loss(sim_scores, targets)
-                    tepoch.set_postfix(loss=f"{str(loss.item())}")
+                    with torch.cuda.amp.autocast():
+                        p_outputs = self.p_encoder(**p_inputs)  # (batch_size*(num_neg+1), emb_dim)
+                        q_outputs = self.q_encoder(**q_inputs)  # (batch_size*, emb_dim)
 
-                    loss.backward()
-                    if step % 100 == 0:
-                        print(f"Step {step} : Loss {loss.item()}")
-                    optimizer.step()
+                        # Calculate similarity score & loss
+                        sim_scores = torch.matmul(q_outputs, torch.transpose(p_outputs, 0, 1))
+                        sim_scores = F.log_softmax(sim_scores, dim=1)
+                    
+                        loss = F.nll_loss(sim_scores, targets)
+
+                    tepoch.set_postfix(loss=f"{str(loss.item())}")
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(optimizer)
                     scheduler.step()
+                    self.scaler.update()
                     self.p_encoder.zero_grad()
                     self.q_encoder.zero_grad()
                     global_step += 1
-
                     torch.cuda.empty_cache()
-
                     del p_inputs, q_inputs
+
+                    if step % 100 == 0:
+                        print(f"Step {step} : Loss {loss.item()}")
 
     def evaluate(self, k=5, dataset=None, args=None):
         if dataset == None:
