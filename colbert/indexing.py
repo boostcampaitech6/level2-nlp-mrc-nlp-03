@@ -6,13 +6,13 @@ from typing import Any
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ColBERT를 사용해 위키피디아 문서에 인덱싱 작업을 수행합니다.")
     parser.add_argument('--wikipedia_path', type=str, default='../data/wikipedia_documents.json',
-                        help='Path to the Wikipedia documents JSON file.')
+                        help='Wikipedia documents JSON 경로')
     parser.add_argument('--model_name_or_path', type=str, default='.ragatouille/colbert/checkpoint/',
-                        help='Path to the pre-trained model or model name.')
+                        help='사전 학습 모델 또는 경로')
     parser.add_argument('--index_root', type=str, default=None,
-                        help='Root directory where the index should be stored.')
+                        help='구축된 인덱스를 저장할 경로')
     parser.add_argument('--index_name', type=str, default='index',
-                        help='Name of the index to be created.')
+                        help='생성할 인덱스 파일의 이름')
     return parser.parse_args()
 
 def index(args: argparse.Namespace) -> None:
