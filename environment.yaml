@@ -1,0 +1,32 @@
+name: mrc
+
+channels:
+  - conda-forge
+  - pytorch
+  - huggingface
+  - nvidia
+  - defaults
+
+dependencies:
+  # --------- basic --------- #
+  - python=3.9
+  - cudatoolkit=11.4.1
+  - faiss-gpu=1.7.4
+  - faiss-cpu
+  - pytorch=1.13
+  - transformers=4.36
+  - accelerate
+  - nodejs=20.*
+  - evaluate
+
+  # --------- logger --------- #
+  - mlflow
+
+  # --------- pip --------- #
+  - pip>=23
+  - pip:
+    - matplotlib
+    - pandas
+    - seaborn
+    - jupyter
+    - scikit-learn
