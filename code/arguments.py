@@ -25,10 +25,12 @@ class ModelArguments:
         default="monologg/koelectra-base-v3-finetuned-korquad",
         metadata={"help": "BM25 Pretrained tokenizer name or path if not the same as model_name"},
     )
+
     dpr_tokenizer_name: Optional[str] = field(
         default='klue/bert-base', 
         metadata={"help": "DPR Pretrained tokenizer name or path if not the same as model_name"}
     )
+
 
 
 @dataclass
@@ -94,9 +96,16 @@ class DataTrainingArguments:
         default=64, metadata={"help": "Define how many clusters to use for faiss."}
     )
     top_k_retrieval: int = field(
-        default=20,
+
+        default=30,
         metadata={"help": "Define how many top-k passages to retrieve based on similarity."},
     )
     use_faiss: bool = field(default=False, metadata={"help": "Whether to build with faiss"})
-    rt_type: str = field(default='bm25', metadata={"help": "Whether to use BM25"})
-    dpr_encoder_path : str = field(default='./dense_retireval', metadata={"help": "path of trained dpr encoder"})
+    # bm25: bool = field(default=False, metadata={"help": "Whether to use BM25"})
+    # dpr: bool = field(default=False, metadata={"help": "Whether to use DPR"})
+    # tf_idf: bool = field(default=False, metadata={"help": "Whether to use TF-IDF"})
+    retrieval_type: Optional[str] = field(
+        default="dpr",
+        metadata={"help": "The type of retrieval to use."},
+    )
+

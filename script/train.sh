@@ -17,11 +17,10 @@
 # --do_eval: Whether to run evaluation on the validation set or not.
 # --seed: Random seed that will be set at the beginning of training.
 # 추가적인 설정은 HuggingFace 참고 (HuggingFace: https://huggingface.co/docs/transformers/v4.37.2/en/main_classes/trainer#transformers.TrainingArguments)
-# --model_name_or_path klue/roberta-large \
-# --load_best_checkpoint
+
 
 python3 code/train.py \
-    --model_name_or_path code/models/train_dataset/checkpoint-10500 \
+    --model_name_or_path klue/bert-base \
     --dataset_name data/train_dataset \
     --overwrite_cache True \
     --max_seq_length 384 \
@@ -32,9 +31,4 @@ python3 code/train.py \
     --overwrite_output_dir True \
     --do_train True \
     --do_eval True \
-    --seed 42 \
-    --per_device_train_batch_size 16 \
-    --num_train_epochs 3 \
-    --learning_rate 5e-05 \
-    --save_steps 1500
-    
+    --seed 42
