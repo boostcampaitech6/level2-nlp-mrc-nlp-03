@@ -4,7 +4,9 @@
 """
 
 
-from typing import Callable, Dict, List, NoReturn, Tuple
+
+from typing import Callable, Dict, List, NoReturn, Tuple, Optional
+
 
 import logging
 import sys
@@ -14,11 +16,13 @@ import numpy as np
 from arguments import DataTrainingArguments, ModelArguments
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, load_from_disk
 from retrieve.bm25 import BM25
+
 # from retrieve.new_bm25 import BM25Retrieval as BM25
 from retrieve.dpr_bm25_rerank import BM25_DPRpipeline
 from retrieve.tf_idf import TfidfRetrieval
 from trainer_qa import QuestionAnsweringTrainer
 from retrieve.dpr import DenseRetrieval
+
 from transformers import (
     AutoConfig,
     AutoModelForQuestionAnswering,
@@ -75,6 +79,8 @@ def main():
         model_args.bm25_tokenizer_name,
         use_fast=True,
     )
+
+
     model = AutoModelForQuestionAnswering.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -83,12 +89,14 @@ def main():
 
     # True일 경우 : run passage retrieval
     if data_args.eval_retrieval:
+
         datasets = run_sparse_retrieval(
             bm25_tokenizer.tokenize,
             datasets,
             training_args,
             data_args,
         )
+
 
     # eval or predict mrc model
     if training_args.do_eval or training_args.do_predict:
@@ -104,19 +112,23 @@ def run_sparse_retrieval(
     # Query에 맞는 Passage들을 Retrieval 합니다.
     logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
     if data_args.retrieval_type == "bm25":
+
         print(">>>>> BM25를 사용합니다.")
         retriever = BM25(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )  # BM25를 사용하는 경우
+
     elif data_args.retrieval_type == "tfidf":
+
         print(">>>>> TF-IDF를 사용합니다.")
         retriever = TfidfRetrieval(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )  # TF-IDF 사용하는 경우
+
     elif data_args.retrieval_type == "dpr":
         print(">>>>> DPR를 사용합니다.")
         retriever = DenseRetrieval(
@@ -127,10 +139,12 @@ def run_sparse_retrieval(
     elif data_args.retrieval_type == "bm25_dpr":
         print(">>>>> DPR + BM25를 사용합니다.")
         bm25 = BM25(
+
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
             context_path=data_args.context_path,
         )
+
         dpr = DenseRetrieval(
             tokenize_fn=tokenize_fn,
             data_path=data_args.data_path,
@@ -140,6 +154,7 @@ def run_sparse_retrieval(
 
 
     retriever.get_sparse_embedding()
+
 
     if data_args.use_faiss:
         retriever.build_faiss(num_clusters=data_args.num_clusters)

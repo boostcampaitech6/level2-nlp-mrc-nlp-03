@@ -18,6 +18,7 @@
 # --seed: Random seed that will be set at the beginning of training.
 # 추가적인 설정은 HuggingFace 참고 (HuggingFace: https://huggingface.co/docs/transformers/v4.37.2/en/main_classes/trainer#transformers.TrainingArguments)
 
+
 python3 code/train.py \
     --model_name_or_path klue/bert-base \
     --dataset_name data/train_dataset \

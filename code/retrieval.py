@@ -10,13 +10,17 @@ from contextlib import contextmanager
 import faiss
 import numpy as np
 import pandas as pd
+
 from datasets import Dataset, concatenate_datasets, load_from_disk
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 
 from retrieve.base_retrieval_class import Retrieval
 from retrieve.bm25 import BM25
 from retrieve.tf_idf import TfidfRetrieval
+
+
 
 seed = 2024
 random.seed(seed)  # python random seed 고정
@@ -44,6 +48,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_faiss", metavar=False, type=bool, help="")
     parser.add_argument("--bm25", default=True, type=bool, help="BM25는 True, TF-IDF는 False")
 
+
     args = parser.parse_args()
 
     # Test sparse
@@ -65,19 +70,24 @@ if __name__ == "__main__":
     )
 
     if args.bm25:
+
         retriever = BM25(
             tokenize_fn=tokenizer.tokenize,
             data_path=args.data_path,
             context_path=args.context_path,
         )
+
     else:
+
         retriever = TfidfRetrieval(
             tokenize_fn=tokenizer.tokenize,
             data_path=args.data_path,
             context_path=args.context_path,
         )
 
+
     retriever.get_sparse_embedding()
+
     query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
 
     if args.use_faiss:

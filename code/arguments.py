@@ -26,6 +26,12 @@ class ModelArguments:
         metadata={"help": "BM25 Pretrained tokenizer name or path if not the same as model_name"},
     )
 
+    dpr_tokenizer_name: Optional[str] = field(
+        default='klue/bert-base', 
+        metadata={"help": "DPR Pretrained tokenizer name or path if not the same as model_name"}
+    )
+
+
 
 @dataclass
 class DataTrainingArguments:
@@ -90,6 +96,7 @@ class DataTrainingArguments:
         default=64, metadata={"help": "Define how many clusters to use for faiss."}
     )
     top_k_retrieval: int = field(
+
         default=30,
         metadata={"help": "Define how many top-k passages to retrieve based on similarity."},
     )
@@ -101,3 +108,4 @@ class DataTrainingArguments:
         default="dpr",
         metadata={"help": "The type of retrieval to use."},
     )
+
